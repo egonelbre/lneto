@@ -2,9 +2,11 @@ package pcap
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -13,6 +15,7 @@ import (
 	"github.com/soypat/lneto/dns"
 	"github.com/soypat/lneto/ethernet"
 	"github.com/soypat/lneto/http/httpraw"
+	"github.com/soypat/lneto/internal/fmtlite"
 	"github.com/soypat/lneto/internal/ltesto"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
@@ -574,4 +577,60 @@ func ExampleFormatter_dns() {
 	// 	TTL=0x00000040
 	// 	Length=4
 	// 	Data=20.0.22.2
+}
+
+// prefixErr is an error that formats through fmtlite, as lneto's joined
+// validator errors do.
+type prefixErr struct {
+	prefix string
+	err    error
+}
+
+func (e *prefixErr) Error() string { return fmtlite.Sprint(e) }
+func (e *prefixErr) Format(s fmt.State, verb rune) {
+	fmtlite.FormatError(s, verb, e == nil, func(s fmtlite.State) {
+		fmtlite.WriteString(s, e.prefix)
+		fmtlite.Print(s, e.err)
+	})
+}
+
+func TestFormatFrameErrors(t *testing.T) {
+	bpe := &lneto.BitPosErr{BitStart: 8, BitLen: 8, Err: lneto.ErrInvalidField}
+	tests := []struct {
+		name       string
+		errs       []error
+		want       string
+		wantAllocs float64
+	}{
+		{name: "sentinels", errs: []error{lneto.ErrTruncatedFrame, ErrLimitExceeded},
+			want: "X len=0 errs=(truncated frame;pcap: limit exceeded)"},
+		{name: "bitpos", errs: []error{bpe}, want: "X len=0 errs=(invalid field)"},
+		{name: "fmtlite formatter", errs: []error{&prefixErr{"a: ", &prefixErr{"b: ", bpe}}},
+			want: "X len=0 errs=(a: b: invalid field)"},
+		// Not a fmtlite.Formatter: Error() builds the joined string.
+		{name: "errors.Join", errs: []error{errors.Join(lneto.ErrBadCRC, bpe)},
+			want: "X len=0 errs=(incorrect checksum\ninvalid field)", wantAllocs: 2},
+	}
+	var f Formatter
+	dst := make([]byte, 0, 256)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frm := Frame{Protocol: "X", Errors: tt.errs}
+			var err error
+			dst, err = f.FormatFrame(dst[:0], frm, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(dst) != tt.want {
+				t.Errorf("got %q, want %q", dst, tt.want)
+			}
+			if runtime.Compiler == "tinygo" { // TinyGo's testing.AllocsPerRun does not count allocations.
+				return
+			}
+			allocs := testing.AllocsPerRun(100, func() { dst, _ = f.FormatFrame(dst[:0], frm, nil) })
+			if allocs != tt.wantAllocs {
+				t.Errorf("allocs = %v, want %v", allocs, tt.wantAllocs)
+			}
+		})
+	}
 }

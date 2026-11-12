@@ -13,6 +13,7 @@ import (
 
 	"github.com/soypat/lneto"
 	"github.com/soypat/lneto/ethernet"
+	"github.com/soypat/lneto/internal/fmtlite"
 	"github.com/soypat/lneto/ipv4"
 	"github.com/soypat/lneto/ipv6"
 	"github.com/soypat/lneto/ntp"
@@ -32,7 +33,16 @@ type Formatter struct {
 	DisableLegacyFilter bool
 	mubuf               sync.Mutex
 	buf                 []byte
-	uintBuf             [8]byte // scratch buffer for fieldAsUint to avoid TinyGo heap escape.
+	uintBuf             [8]byte        // scratch buffer for fieldAsUint to avoid TinyGo heap escape.
+	errBuf              fmtlite.Buffer // State for appendError; a local one would escape to the heap.
+}
+
+// appendError appends err's message to dst without building it as a
+// string first when err implements [fmtlite.Formatter].
+func (f *Formatter) appendError(dst []byte, err error) []byte {
+	f.mubuf.Lock()
+	defer f.mubuf.Unlock()
+	return fmtlite.Append(&f.errBuf, dst, err)
 }
 
 // FormatFrames appends the formatted frame data to the destination buffer according the Formatter state.
@@ -95,7 +105,7 @@ func (f *Formatter) FormatFrame(dst []byte, frm Frame, pkt []byte) (_ []byte, er
 			if i != 0 {
 				dst = append(dst, ';')
 			}
-			dst = append(dst, err.Error()...)
+			dst = f.appendError(dst, err)
 			debuglog("pcap:fmtframe:error")
 		}
 		dst = append(dst, ')')

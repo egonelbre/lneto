@@ -1,8 +1,10 @@
 package lneto
 
 import (
-	"errors"
+	"fmt"
 	"strconv"
+
+	"github.com/soypat/lneto/internal/fmtlite"
 )
 
 type ValidateFlags uint64
@@ -46,7 +48,7 @@ func (v *Validator) ErrPop() (err error) {
 	if len(v.accum) == 0 {
 		err = v.firstErr
 	} else {
-		err = errors.Join(append([]error{v.firstErr}, v.accum...)...)
+		err = &joinError{errs: append([]error{v.firstErr}, v.accum...)}
 	}
 	v.ResetErr()
 	return err
@@ -89,6 +91,14 @@ func (bpe *BitPosErr) Error() string {
 	return bpe.Err.Error()
 }
 
+// Format writes the same text as Error. Through [fmtlite], a wrapped error
+// that also has a Format method writes straight into s.
+func (bpe *BitPosErr) Format(s fmt.State, verb rune) {
+	fmtlite.FormatError(s, verb, bpe == nil, func(s fmtlite.State) {
+		fmtlite.Print(s, bpe.Err)
+	})
+}
+
 func (bpe *BitPosErr) AppendError(dst []byte) []byte {
 	dst = append(dst, bpe.Err.Error()...)
 	dst = append(dst, ": bits "...)
@@ -96,4 +106,25 @@ func (bpe *BitPosErr) AppendError(dst []byte) []byte {
 	dst = append(dst, '.', '.')
 	dst = strconv.AppendUint(dst, uint64(bpe.BitStart+bpe.BitLen), 10)
 	return dst
+}
+
+// joinError is what errors.Join returns, plus a Format method: appending
+// it through [fmtlite] writes each error in turn, with no joined string
+// built first. All errs are non-nil.
+type joinError struct {
+	errs []error
+}
+
+func (e *joinError) Error() string   { return fmtlite.Sprint(e) }
+func (e *joinError) Unwrap() []error { return e.errs }
+
+func (e *joinError) Format(s fmt.State, verb rune) {
+	fmtlite.FormatError(s, verb, e == nil, func(s fmtlite.State) {
+		for i, err := range e.errs {
+			if i > 0 {
+				fmtlite.WriteString(s, "\n")
+			}
+			fmtlite.Print(s, err)
+		}
+	})
 }
